@@ -1,0 +1,74 @@
+defaults:
+  - model: cnn
+  - train: default
+  - aug: none
+  - analysis: default
+  - _self_
+
+project:
+  name: room-occupancy-spectrogram
+  random_seed: 42
+
+mode:
+  pipeline_name: prepare_data
+  test_mode: false
+  test_dir: tests
+  test_file: ""
+
+pipeline_dispatch:
+  prepare_data: src.main:main
+  train_baseline: src.main:main
+  predict_submission: src.main:main
+  compare_baselines: src.main:main
+  analyze_validation: src.main:main
+  run_kfold_evaluation: src.main:main
+
+paths:
+  root_dir: ${hydra:runtime.cwd}
+  data_dir: ${paths.root_dir}/datasets
+  train_image_dir: ${paths.data_dir}/x_train
+  test_image_dir: ${paths.data_dir}/x_test
+  train_label_file: ${paths.data_dir}/y_train.csv
+  sample_submission_file: ${paths.data_dir}/y_test__submission_example.csv
+  experiment_root_dir: ${paths.root_dir}/experiments
+  experiment_dir: ${paths.experiment_root_dir}/${model.name}/${aug.name}
+  comparison_dir: ${paths.experiment_root_dir}/comparisons
+  submission_dir: ${paths.data_dir}/submissions/${model.name}/${aug.name}
+  checkpoint_dir: ${paths.experiment_dir}/checkpoints
+  analysis_dir: ${paths.experiment_dir}/analysis
+  kfold_dir: ${paths.experiment_dir}/kfold
+  kfold_folds_dir: ${paths.kfold_dir}/folds
+  best_model_file: ${paths.checkpoint_dir}/best_model.pt
+  training_history_file: ${paths.experiment_dir}/training_history.csv
+  validation_predictions_file: ${paths.experiment_dir}/validation_predictions.csv
+  validation_summary_file: ${paths.experiment_dir}/validation_summary.csv
+  validation_confusion_matrix_file: ${paths.analysis_dir}/confusion_matrix.csv
+  validation_class_metrics_file: ${paths.analysis_dir}/class_metrics.csv
+  validation_misclassified_file: ${paths.analysis_dir}/misclassified_samples.csv
+  validation_analysis_summary_file: ${paths.analysis_dir}/summary.csv
+  baseline_comparison_file: ${paths.comparison_dir}/baseline_comparison_${aug.name}.csv
+  kfold_fold_metrics_file: ${paths.kfold_dir}/fold_metrics.csv
+  kfold_oof_predictions_file: ${paths.kfold_dir}/oof_predictions.csv
+  kfold_summary_file: ${paths.kfold_dir}/summary.csv
+  kfold_confusion_matrix_file: ${paths.kfold_dir}/confusion_matrix.csv
+  kfold_class_metrics_file: ${paths.kfold_dir}/class_metrics.csv
+
+data:
+  image_size: 64
+  image_mode: grayscale
+  num_channels: 1
+  num_classes: 4
+  valid_size: 0.2
+  batch_size: 32
+  num_workers: 0
+
+logging:
+  level: INFO
+
+runtime:
+  device: auto
+
+compare:
+  baseline_models:
+    - cnn
+    - resnet18

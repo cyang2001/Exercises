@@ -1,0 +1,12 @@
+metric,value
+num_validation_samples,1846
+num_errors,44
+accuracy,0.9761646803900325
+macro_f1,0.9714596480443722
+mean_prediction_confidence,0.9790475688802073
+mean_correct_confidence,0.9837543394470321
+mean_error_confidence,0.7862839197570627
+max_error_confidence,0.997484564781189
+top_k_errors_exported,44
+most_common_confusion,1->2
+most_common_confusion_count,8

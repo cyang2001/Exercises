@@ -1,0 +1,729 @@
+---
+title: "Room Occupancy Spectrogram Classification"
+subtitle: "Experimental Report Draft"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+  pdf:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    geometry:
+      - margin=1in
+    fig-pos: "H"
+execute:
+  echo: false
+  warning: false
+  message: false
+jupyter: python3
+---
+
+## Introduction
+
+This report summarizes the development of a spectrogram-based room occupancy classification pipeline.
+The work progressed from a simple baseline comparison to augmentation design, validation error analysis,
+and finally a full stratified 5-fold cross-validation evaluation.
+
+The main goal of the project is to build a robust classifier for room occupancy states from spectrogram
+images while keeping the pipeline reproducible and the conclusions supported by multiple evaluation stages.
+
+## Experimental Setup
+
+```{python}
+from pathlib import Path
+from typing import Dict, Iterable, Tuple
+
+import math
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PIL import Image
+from IPython.display import Markdown, display
+
+
+def resolve_project_root() -> Path:
+    """Resolve the project root from the current Quarto execution directory.
+
+    Returns:
+        Absolute path to the project root directory.
+
+    Raises:
+        FileNotFoundError: If the project root cannot be identified.
+    """
+    current = Path.cwd().resolve()
+    for candidate in [current, *current.parents]:
+        if (candidate / "run.py").exists() and (candidate / "datasets").exists():
+            return candidate
+    raise FileNotFoundError("Could not resolve the project root directory.")
+
+
+def read_metric_csv(path: Path) -> pd.DataFrame:
+    """Read a CSV file into a DataFrame.
+
+    Args:
+        path: CSV file path.
+
+    Returns:
+        Loaded DataFrame.
+    """
+    return pd.read_csv(path)
+
+
+def read_summary_map(path: Path) -> Dict[str, float]:
+    """Convert a metric-value CSV file into a dictionary.
+
+    Args:
+        path: Summary CSV file containing ``metric`` and ``value`` columns.
+
+    Returns:
+        Dictionary mapping metric names to values.
+    """
+    summary_df = pd.read_csv(path)
+    return dict(zip(summary_df["metric"], summary_df["value"]))
+
+
+def format_metric_value(value: object) -> str:
+    """Format one metric value for compact report display.
+
+    Args:
+        value: Metric value to be formatted.
+
+    Returns:
+        Human-readable text representation.
+    """
+    if isinstance(value, (float, np.floating)):
+        return f"{float(value):.4f}"
+    return str(value)
+
+
+def plot_bar_metric(
+    data_frame: pd.DataFrame,
+    x_column: str,
+    y_column: str,
+    title: str,
+    color: str = "steelblue",
+    rotation: int = 0,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Create a simple bar chart from a DataFrame.
+
+    Args:
+        data_frame: Input DataFrame.
+        x_column: Column used on the x-axis.
+        y_column: Column used on the y-axis.
+        title: Figure title.
+        color: Bar color.
+        rotation: X tick rotation in degrees.
+
+    Returns:
+        Matplotlib figure and axis.
+    """
+    figure, axis = plt.subplots(figsize=(8, 4.5))
+    axis.bar(data_frame[x_column].astype(str), data_frame[y_column], color=color)
+    axis.set_title(title)
+    axis.set_xlabel(x_column.replace("_", " ").title())
+    axis.set_ylabel(y_column.replace("_", " ").title())
+    axis.grid(axis="y", alpha=0.25)
+    axis.tick_params(axis="x", rotation=rotation)
+    figure.tight_layout()
+    return figure, axis
+
+
+def plot_confusion_matrix(
+    confusion_df: pd.DataFrame,
+    title: str,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """Plot a confusion matrix heatmap with text annotations.
+
+    Args:
+        confusion_df: DataFrame exported by the analysis pipeline.
+        title: Figure title.
+
+    Returns:
+        Matplotlib figure and axis.
+    """
+    matrix_df = confusion_df[confusion_df["true_label"] != "all"].copy()
+    matrix_df["true_label"] = matrix_df["true_label"].astype(int)
+    value_columns = [column for column in matrix_df.columns if column.startswith("pred_")]
+    matrix = matrix_df[value_columns].to_numpy(dtype=float)
+
+    figure, axis = plt.subplots(figsize=(6, 5))
+    image = axis.imshow(matrix, cmap="Blues")
+    axis.set_title(title)
+    axis.set_xlabel("Predicted Label")
+    axis.set_ylabel("True Label")
+    axis.set_xticks(np.arange(len(value_columns)))
+    axis.set_yticks(np.arange(len(matrix_df)))
+    axis.set_xticklabels([column.replace("pred_", "") for column in value_columns])
+    axis.set_yticklabels(matrix_df["true_label"].astype(str).tolist())
+
+    for row_index in range(matrix.shape[0]):
+        for column_index in range(matrix.shape[1]):
+            axis.text(
+                column_index,
+                row_index,
+                int(matrix[row_index, column_index]),
+                ha="center",
+                va="center",
+                color="black",
+            )
+
+    figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+    figure.tight_layout()
+    return figure, axis
+
+
+def plot_misclassified_grid(
+    error_df: pd.DataFrame,
+    max_images: int = 6,
+) -> Tuple[plt.Figure, np.ndarray]:
+    """Display a small grid of high-confidence misclassified samples.
+
+    Args:
+        error_df: Misclassified-sample DataFrame.
+        max_images: Maximum number of images shown in the grid.
+
+    Returns:
+        Matplotlib figure and axes array.
+    """
+    subset_df = error_df.head(max_images).copy()
+    columns = 2
+    rows = math.ceil(len(subset_df) / columns)
+    figure, axes = plt.subplots(rows, columns, figsize=(6 * columns, 3.8 * rows))
+    axes_array = np.array(axes).reshape(-1)
+
+    for axis in axes_array:
+        axis.axis("off")
+
+    for axis, row in zip(axes_array, subset_df.itertuples(index=False)):
+        image = Image.open(row.image_path).convert("RGB")
+        axis.imshow(image)
+        axis.set_title(
+            (
+                f"id={row.image_id}\n"
+                f"true={row.y_true}, pred={row.y_pred}\n"
+                f"conf={row.predicted_confidence:.3f}"
+            ),
+            fontsize=9,
+        )
+        axis.axis("off")
+
+    figure.suptitle("Top High-Confidence Misclassified Samples", fontsize=14)
+    figure.tight_layout(rect=[0, 0, 1, 0.97])
+    return figure, axes
+
+
+PROJECT_ROOT = resolve_project_root()
+DATA_DIR = PROJECT_ROOT / "datasets"
+REPORT_DIR = PROJECT_ROOT / "reports"
+EXPERIMENT_DIR = PROJECT_ROOT / "experiments"
+BEST_RUN_DIR = EXPERIMENT_DIR / "resnet18" / "spectral_safe"
+BEST_ANALYSIS_DIR = BEST_RUN_DIR / "analysis"
+KFOLD_DIR = BEST_RUN_DIR / "kfold"
+
+baseline_comparison_df = read_metric_csv(EXPERIMENT_DIR / "comparisons" / "baseline_comparison_none.csv")
+augmentation_comparison_df = read_metric_csv(EXPERIMENT_DIR / "comparisons" / "resnet18_aug_comparison.csv")
+holdout_summary_map = read_summary_map(BEST_ANALYSIS_DIR / "summary.csv")
+holdout_class_metrics_df = read_metric_csv(BEST_ANALYSIS_DIR / "class_metrics.csv")
+holdout_confusion_df = read_metric_csv(BEST_ANALYSIS_DIR / "confusion_matrix.csv")
+misclassified_df = read_metric_csv(BEST_ANALYSIS_DIR / "misclassified_samples.csv")
+kfold_summary_map = read_summary_map(KFOLD_DIR / "summary.csv")
+kfold_fold_metrics_df = read_metric_csv(KFOLD_DIR / "fold_metrics.csv")
+kfold_class_metrics_df = read_metric_csv(KFOLD_DIR / "class_metrics.csv")
+kfold_confusion_df = read_metric_csv(KFOLD_DIR / "confusion_matrix.csv")
+submission_preview_df = read_metric_csv(
+    DATA_DIR / "submissions" / "resnet18" / "spectral_safe" / "submission_resnet18.csv"
+).head(10)
+
+y_train_df = read_metric_csv(DATA_DIR / "y_train.csv")
+train_image_paths = sorted((DATA_DIR / "x_train").glob("*.png"))
+test_image_paths = sorted((DATA_DIR / "x_test").glob("*.png"))
+sample_image = Image.open(train_image_paths[0])
+
+dataset_summary_df = pd.DataFrame(
+    [
+        {"metric": "num_train_images", "value": len(train_image_paths)},
+        {"metric": "num_test_images", "value": len(test_image_paths)},
+        {"metric": "num_classes", "value": int(y_train_df["target"].nunique())},
+        {"metric": "original_image_width", "value": sample_image.size[0]},
+        {"metric": "original_image_height", "value": sample_image.size[1]},
+        {"metric": "configured_input_size", "value": 64},
+        {"metric": "configured_input_mode", "value": "grayscale"},
+    ]
+)
+
+label_distribution_df = (
+    y_train_df.groupby("target")
+    .size()
+    .reset_index(name="count")
+    .sort_values("target")
+    .reset_index(drop=True)
+)
+
+recommended_config_df = pd.DataFrame(
+    [
+        {"item": "Model", "value": "resnet18"},
+        {"item": "Augmentation", "value": "spectral_safe"},
+        {"item": "Input Size", "value": "64 x 64"},
+        {"item": "Input Mode", "value": "grayscale"},
+        {"item": "Evaluation Confirmation", "value": "holdout + 5-fold"},
+    ]
+)
+
+experimental_pipeline_df = pd.DataFrame(
+    [
+        {
+            "stage": "Data Preparation",
+            "goal": "Load image paths and labels, inspect dataset structure, and verify class balance.",
+            "main_artifacts": "EDA tables, label distribution, sample images",
+        },
+        {
+            "stage": "Baseline Training",
+            "goal": "Train baseline models under a unified pipeline and save reproducible artifacts.",
+            "main_artifacts": "checkpoints, training_history.csv, validation_predictions.csv",
+        },
+        {
+            "stage": "Baseline Comparison",
+            "goal": "Compare different backbones on the same holdout split.",
+            "main_artifacts": "baseline_comparison_none.csv",
+        },
+        {
+            "stage": "Augmentation Comparison",
+            "goal": "Evaluate augmentation presets for the strongest baseline model.",
+            "main_artifacts": "resnet18_aug_comparison.csv",
+        },
+        {
+            "stage": "Validation Analysis",
+            "goal": "Inspect confusion patterns, class metrics, and representative errors.",
+            "main_artifacts": "confusion_matrix.csv, class_metrics.csv, misclassified_samples.csv",
+        },
+        {
+            "stage": "Final Cross-validation",
+            "goal": "Verify that the best configuration remains stable across multiple folds.",
+            "main_artifacts": "kfold/summary.csv, kfold/fold_metrics.csv, kfold/confusion_matrix.csv",
+        },
+        {
+            "stage": "Submission Generation",
+            "goal": "Export a Kaggle-ready CSV from the best available checkpoint.",
+            "main_artifacts": "submission_resnet18.csv",
+        },
+    ]
+)
+
+augmentation_strategy_df = pd.DataFrame(
+    [
+        {
+            "strategy": "none",
+            "design_purpose": "Provide a clean reference point without any augmentation.",
+            "time_mask": "0.00 / width 0",
+            "frequency_mask": "0.00 / height 0",
+            "gaussian_noise": "0.00 / std 0.0",
+            "amplitude_scaling": "0.00 / [1.00, 1.00]",
+            "color_jitter": "0.00",
+        },
+        {
+            "strategy": "light",
+            "design_purpose": "Introduce mild perturbations while staying close to the original signal.",
+            "time_mask": "0.15 / width 8",
+            "frequency_mask": "0.15 / height 8",
+            "gaussian_noise": "0.10 / std 0.01",
+            "amplitude_scaling": "0.15 / [0.95, 1.05]",
+            "color_jitter": "0.05",
+        },
+        {
+            "strategy": "spectral_safe",
+            "design_purpose": "Apply stronger but spectrogram-consistent perturbations to improve robustness.",
+            "time_mask": "0.35 / width 16",
+            "frequency_mask": "0.35 / height 12",
+            "gaussian_noise": "0.15 / std 0.015",
+            "amplitude_scaling": "0.20 / [0.90, 1.10]",
+            "color_jitter": "0.02",
+        },
+    ]
+)
+```
+
+```{python}
+recommended_config_df
+```
+
+## Overall Experimental Framework
+
+The project was organized as a staged experimental pipeline rather than a single training script.
+This design was important for two reasons. First, it kept the workflow reproducible because each stage
+produced explicit artifacts that could be inspected later. Second, it made the project easier to extend
+from a simple holdout experiment to validation analysis and finally to 5-fold cross-validation.
+
+At a high level, the workflow followed the sequence below:
+
+```{mermaid}
+flowchart TD
+    A[Dataset Inspection] --> B[Preprocessing Design]
+    B --> C[Baseline Training]
+    C --> D[Baseline Comparison]
+    D --> E[Augmentation Comparison]
+    E --> F[Best Holdout Analysis]
+    F --> G[5-Fold Cross-validation]
+    G --> H[Final Submission]
+```
+
+The main stages of the framework are summarized below.
+
+```{python}
+#| output: asis
+for row in experimental_pipeline_df.itertuples(index=False):
+    print(f"### {row.stage}")
+    print(f"- Goal: {row.goal}")
+    print(f"- Main artifacts: {row.main_artifacts}")
+    print("")
+```
+
+From an engineering perspective, the framework is implemented through a unified `run.py` entry point.
+Different project actions are dispatched through configuration-controlled pipelines, including training,
+comparison, validation analysis, submission generation, and final cross-validation. This structure
+ensures that the same configuration system controls both experimentation and final reporting artifacts.
+
+## Dataset Overview
+
+The dataset contains labeled training spectrograms and an unlabeled test split.
+The project uses both `accuracy` and `macro_f1` because the macro-F1 score provides a clearer view
+of per-class robustness than accuracy alone.
+
+```{python}
+dataset_summary_df
+```
+
+```{python}
+figure, axis = plot_bar_metric(
+    data_frame=label_distribution_df,
+    x_column="target",
+    y_column="count",
+    title="Training Label Distribution",
+    color="mediumpurple",
+)
+plt.show()
+```
+
+## Preprocessing Design
+
+The final configuration uses a `64 x 64` grayscale input pipeline instead of the original larger RGB
+setup. This design was chosen for two reasons:
+
+1. The original spectrogram images are very small, so aggressive upscaling to `224 x 224` increases
+   computation without adding new semantic information.
+2. The visible colors mainly represent a visualization colormap rather than true multi-channel sensor
+   measurements, so grayscale is a reasonable and more efficient representation.
+
+The preprocessing stage was therefore not only a computational optimization, but also a modeling choice.
+It reflects the assumption that the discriminative information of the spectrogram is mainly encoded in
+its structural intensity pattern rather than in arbitrary color-map variation.
+
+### Three Augmentation Strategies
+
+The augmentation study in this project did not treat all image augmentations as equally suitable.
+Instead, three explicit strategies were designed and compared.
+
+#### Strategy: `none`
+
+- Purpose: Provide a clean reference point without any augmentation.
+- Time mask: `0.00 / width 0`
+- Frequency mask: `0.00 / height 0`
+- Gaussian noise: `0.00 / std 0.0`
+- Amplitude scaling: `0.00 / [1.00, 1.00]`
+- Color jitter: `0.00`
+
+#### Strategy: `light`
+
+- Purpose: Introduce mild perturbations while staying close to the original signal.
+- Time mask: `0.15 / width 8`
+- Frequency mask: `0.15 / height 8`
+- Gaussian noise: `0.10 / std 0.01`
+- Amplitude scaling: `0.15 / [0.95, 1.05]`
+- Color jitter: `0.05`
+
+#### Strategy: `spectral_safe`
+
+- Purpose: Apply stronger but spectrogram-consistent perturbations to improve robustness.
+- Time mask: `0.35 / width 16`
+- Frequency mask: `0.35 / height 12`
+- Gaussian noise: `0.15 / std 0.015`
+- Amplitude scaling: `0.20 / [0.90, 1.10]`
+- Color jitter: `0.02`
+
+The logic behind the three strategies is the following:
+
+1. `none`:
+   This strategy disables all perturbations and serves as the pure reference condition.
+   It is necessary because it shows how much performance the model can obtain from the original data alone.
+
+2. `light`:
+   This strategy introduces only small perturbations, including weak masking, weak Gaussian noise, and
+   narrow amplitude scaling. The purpose is to improve generalization without significantly altering the
+   visual structure of the spectrogram.
+
+3. `spectral_safe`:
+   This strategy applies stronger perturbations, but only in ways that remain consistent with spectrogram
+   semantics. Instead of using unrealistic flips or strong color changes, it focuses on time masking,
+   frequency masking, mild additive noise, and controlled amplitude scaling. This strategy was designed
+   to increase robustness while preserving the temporal-frequency interpretation of the input.
+
+In other words, the three strategies form a progression from no robustness intervention, to mild generic
+regularization, to a more domain-aware augmentation design.
+
+## Baseline Model Comparison
+
+The first decision point in the project was whether a custom CNN baseline was sufficient or whether a
+stronger ImageNet-style backbone should replace it.
+
+```{python}
+baseline_display_df = baseline_comparison_df[
+    ["model_name", "valid_accuracy", "valid_macro_f1", "best_epoch", "rank"]
+].copy()
+baseline_display_df
+```
+
+```{python}
+figure, axes = plt.subplots(2, 1, figsize=(7, 8))
+
+axes[0].bar(
+    baseline_comparison_df["model_name"],
+    baseline_comparison_df["valid_accuracy"],
+    color=["steelblue", "darkorange"],
+)
+axes[0].set_title("Baseline Comparison by Accuracy")
+axes[0].set_ylabel("Validation Accuracy")
+axes[0].grid(axis="y", alpha=0.25)
+
+axes[1].bar(
+    baseline_comparison_df["model_name"],
+    baseline_comparison_df["valid_macro_f1"],
+    color=["steelblue", "darkorange"],
+)
+axes[1].set_title("Baseline Comparison by Macro F1")
+axes[1].set_ylabel("Validation Macro F1")
+axes[1].grid(axis="y", alpha=0.25)
+axes[1].set_xlabel("Model")
+
+figure.tight_layout()
+plt.show()
+```
+
+`resnet18` clearly outperformed the custom `cnn`, so all later experiments focused on the `resnet18`
+family for the final system.
+
+## Augmentation Comparison
+
+After fixing `resnet18` as the primary backbone, the next step was to compare augmentation presets.
+
+This comparison is important because the performance gap between augmentation strategies explains not only
+which preset should be used in the final model, but also whether domain-aware perturbations are genuinely
+useful for this task.
+
+```{python}
+augmentation_display_df = augmentation_comparison_df[
+    ["aug_name", "valid_accuracy", "valid_macro_f1", "best_epoch", "rank"]
+].copy()
+augmentation_display_df
+```
+
+```{python}
+figure, axes = plt.subplots(2, 1, figsize=(7, 8))
+
+axes[0].bar(
+    augmentation_comparison_df["aug_name"],
+    augmentation_comparison_df["valid_accuracy"],
+    color=["gray", "cornflowerblue", "seagreen"],
+)
+axes[0].set_title("ResNet18 Augmentation Comparison by Accuracy")
+axes[0].set_ylabel("Validation Accuracy")
+axes[0].grid(axis="y", alpha=0.25)
+
+axes[1].bar(
+    augmentation_comparison_df["aug_name"],
+    augmentation_comparison_df["valid_macro_f1"],
+    color=["gray", "cornflowerblue", "seagreen"],
+)
+axes[1].set_title("ResNet18 Augmentation Comparison by Macro F1")
+axes[1].set_ylabel("Validation Macro F1")
+axes[1].grid(axis="y", alpha=0.25)
+axes[1].set_xlabel("Augmentation")
+
+figure.tight_layout()
+plt.show()
+```
+
+The comparison shows that `spectral_safe` is the strongest augmentation choice, outperforming both
+`none` and `light` on the holdout validation set.
+
+This result is meaningful from a methodological perspective. The `light` strategy adds only limited
+regularization and therefore improves robustness less consistently. By contrast, `spectral_safe` applies
+perturbations that are stronger but still aligned with the time-frequency structure of spectrogram data.
+The experiment therefore suggests that the best augmentation policy is not simply the weakest one, but
+the one that introduces enough variation while respecting the semantics of the representation.
+
+## Best Holdout Model Analysis
+
+The best holdout run was obtained with `resnet18 + spectral_safe`.
+
+```{python}
+#| output: asis
+ordered_holdout_metrics = [
+    ("accuracy", holdout_summary_map["accuracy"]),
+    ("macro_f1", holdout_summary_map["macro_f1"]),
+    ("num_validation_samples", holdout_summary_map["num_validation_samples"]),
+    ("num_errors", holdout_summary_map["num_errors"]),
+    ("mean_prediction_confidence", holdout_summary_map["mean_prediction_confidence"]),
+    ("mean_correct_confidence", holdout_summary_map["mean_correct_confidence"]),
+    ("mean_error_confidence", holdout_summary_map["mean_error_confidence"]),
+    ("max_error_confidence", holdout_summary_map["max_error_confidence"]),
+    ("most_common_confusion", holdout_summary_map["most_common_confusion"]),
+    ("most_common_confusion_count", holdout_summary_map["most_common_confusion_count"]),
+]
+
+print("### Key Holdout Metrics")
+for metric_name, metric_value in ordered_holdout_metrics:
+    label = metric_name.replace("_", " ").title()
+    print(f"- {label}: {format_metric_value(metric_value)}")
+```
+
+```{python}
+figure, axis = plot_confusion_matrix(
+    confusion_df=holdout_confusion_df,
+    title="Best Holdout Confusion Matrix",
+)
+plt.show()
+```
+
+```{python}
+holdout_class_metrics_df
+```
+
+```{python}
+figure, axis = plot_bar_metric(
+    data_frame=holdout_class_metrics_df,
+    x_column="class_id",
+    y_column="f1_score",
+    title="Best Holdout Per-Class F1 Score",
+    color="darkcyan",
+)
+plt.show()
+```
+
+```{python}
+figure, axes = plot_misclassified_grid(misclassified_df, max_images=6)
+plt.show()
+```
+
+The holdout analysis indicates that most remaining errors are concentrated in a small set of class
+confusions, especially around classes `1`, `2`, and `3`. Class `3` remains the weakest class and is
+the main target for future improvement.
+
+## Final 5-Fold Cross-Validation Evaluation
+
+To verify that the holdout findings were not accidental, the final configuration was evaluated with
+stratified 5-fold cross-validation.
+
+```{python}
+kfold_summary_df = pd.DataFrame(
+    [{"metric": key, "value": value} for key, value in kfold_summary_map.items()]
+)
+kfold_summary_df
+```
+
+```{python}
+kfold_display_df = kfold_fold_metrics_df[
+    ["fold_id", "best_epoch", "valid_loss", "valid_accuracy", "valid_macro_f1"]
+].copy()
+kfold_display_df
+```
+
+```{python}
+figure, axes = plt.subplots(2, 1, figsize=(7, 8))
+
+axes[0].bar(
+    kfold_fold_metrics_df["fold_id"].astype(str),
+    kfold_fold_metrics_df["valid_accuracy"],
+    color="slateblue",
+)
+axes[0].set_title("5-Fold Validation Accuracy")
+axes[0].set_xlabel("Fold")
+axes[0].set_ylabel("Accuracy")
+axes[0].grid(axis="y", alpha=0.25)
+
+axes[1].bar(
+    kfold_fold_metrics_df["fold_id"].astype(str),
+    kfold_fold_metrics_df["valid_macro_f1"],
+    color="teal",
+)
+axes[1].set_title("5-Fold Validation Macro F1")
+axes[1].set_xlabel("Fold")
+axes[1].set_ylabel("Macro F1")
+axes[1].grid(axis="y", alpha=0.25)
+
+figure.tight_layout()
+plt.show()
+```
+
+```{python}
+figure, axis = plot_confusion_matrix(
+    confusion_df=kfold_confusion_df,
+    title="OOF Confusion Matrix from 5-Fold Evaluation",
+)
+plt.show()
+```
+
+```{python}
+kfold_class_metrics_df
+```
+
+```{python}
+figure, axis = plot_bar_metric(
+    data_frame=kfold_class_metrics_df,
+    x_column="class_id",
+    y_column="f1_score",
+    title="OOF Per-Class F1 Score",
+    color="indianred",
+)
+plt.show()
+```
+
+The cross-validation results confirm the stability of the final configuration:
+
+- Mean validation accuracy: `0.9693`
+- Mean validation macro F1: `0.9650`
+- Standard deviation of accuracy: `0.0051`
+- Standard deviation of macro F1: `0.0051`
+
+These values show that the holdout conclusion is not incidental. The final pipeline remains strong
+across multiple train/validation splits.
+
+## Final Submission Artifact
+
+The current best submission was generated from the strongest holdout checkpoint:
+
+```{python}
+submission_preview_df
+```
+
+Submission path:
+
+`datasets/submissions/resnet18/spectral_safe/submission_resnet18.csv`
+
+## Conclusion
+
+This project established a complete, reproducible spectrogram classification workflow, including training,
+comparison, validation analysis, submission generation, and final 5-fold evaluation.
+
+The main conclusions are:
+
+- `resnet18` is a substantially stronger baseline than the custom `cnn`.
+- Reducing the input to `64 x 64` and switching to grayscale improved efficiency without weakening the model.
+- `spectral_safe` is the best augmentation preset among the tested options.
+- The final configuration is both strong on the holdout split and stable under 5-fold cross-validation.
+
+Future work can focus on deeper class-specific error analysis, stronger backbones, and more specialized
+spectrogram augmentations for the hardest classes.

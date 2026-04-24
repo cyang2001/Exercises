@@ -1,0 +1,11 @@
+metric,value
+num_folds,5
+mean_valid_loss,0.11524263901548502
+std_valid_loss,0.0167776555018283
+mean_valid_accuracy,0.9693287177725515
+std_valid_accuracy,0.005115006445293238
+mean_valid_macro_f1,0.9649510530825323
+std_valid_macro_f1,0.005102992120283491
+best_fold_id,1
+best_fold_macro_f1,0.9736225229692895
+best_fold_accuracy,0.9777898158179849

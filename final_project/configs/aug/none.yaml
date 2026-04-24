@@ -1,0 +1,13 @@
+name: none
+horizontal_flip_prob: 0.0
+vertical_flip_prob: 0.0
+color_jitter_prob: 0.0
+time_mask_prob: 0.0
+time_mask_max_width: 0
+frequency_mask_prob: 0.0
+frequency_mask_max_height: 0
+gaussian_noise_prob: 0.0
+gaussian_noise_std: 0.0
+amplitude_scale_prob: 0.0
+amplitude_scale_min: 1.0
+amplitude_scale_max: 1.0

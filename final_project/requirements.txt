@@ -1,0 +1,12 @@
+hydra-core
+matplotlib
+numpy
+omegaconf
+pandas
+pillow
+python-dotenv
+scikit-learn
+torch
+torchvision
+tqdm
+wandb

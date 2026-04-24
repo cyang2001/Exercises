@@ -1,0 +1,5 @@
+name: resnet18
+pretrained: false
+in_channels: ${data.num_channels}
+num_classes: 4
+dropout: 0.2

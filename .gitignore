@@ -1,2 +1,19 @@
 .ipynb_checkpoints
 **/datasets/**
+**/__pycache__/
+*.py[cod]
+*.DS_Store
+
+# Runtime outputs
+final_project/outputs/
+
+# Model binaries
+final_project/experiments/checkpoints/
+final_project/experiments/**/checkpoints/
+final_project/experiments/**/training_history.csv
+final_project/experiments/**/validation_predictions.csv
+final_project/experiments/**/validation_summary.csv
+final_project/experiments/**/oof_predictions.csv
+
+# Quarto intermediate assets
+final_project/reports/final_report_draft_files/

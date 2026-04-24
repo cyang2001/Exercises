@@ -1,0 +1,13 @@
+name: spectral_safe
+horizontal_flip_prob: 0.0
+vertical_flip_prob: 0.0
+color_jitter_prob: 0.02
+time_mask_prob: 0.35
+time_mask_max_width: 16
+frequency_mask_prob: 0.35
+frequency_mask_max_height: 12
+gaussian_noise_prob: 0.15
+gaussian_noise_std: 0.015
+amplitude_scale_prob: 0.2
+amplitude_scale_min: 0.9
+amplitude_scale_max: 1.1
