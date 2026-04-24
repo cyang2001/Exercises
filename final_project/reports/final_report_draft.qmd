@@ -1,6 +1,7 @@
 ---
 title: "Room Occupancy Spectrogram Classification"
 subtitle: "Experimental Report Draft"
+author: "YANG Chen"
 format:
   html:
     toc: true
@@ -727,3 +728,5 @@ The main conclusions are:
 
 Future work can focus on deeper class-specific error analysis, stronger backbones, and more specialized
 spectrogram augmentations for the hardest classes.
+
+Code repository: [https://github.com/cyang2001/Exercises](https://github.com/cyang2001/Exercises)
